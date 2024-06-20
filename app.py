@@ -1,14 +1,16 @@
-
-import chainlit as cl
+import os
+import requests
 import dotenv
 from operator import itemgetter
+
+import chainlit as cl
+
+from qdrant_client import QdrantClient
 
 from langchain_openai import ChatOpenAI
 from langchain_community.document_loaders import TextLoader, PyMuPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Qdrant 
-from qdrant_client import QdrantClient
-
 from langchain_openai.embeddings import OpenAIEmbeddings
 from langchain_core.prompts import PromptTemplate, ChatPromptTemplate
 from langchain.schema.output_parser import StrOutputParser
@@ -25,13 +27,13 @@ here: os.environ["OPENAI_API_KEY"]
 """
 dotenv.load_dotenv()
 
+qdrant_api_key = os.environ["QDRANT_API_KEY"]
 
 # ---- GLOBAL DECLARATIONS ---- #
-ASSISTANT_NAME = "AirBnB Tax Expert Bot"
-#SOURCE_PDF_URL = "https://airbnb2020ipo.q4web.com/files/doc_financials/2024/q1/fdb60f7d-e616-43dc-86ef-e33d3a9bdd05.pdf"
+ASSISTANT_NAME = "AirBnBot"
 SOURCE_PDF_PATH = './data/airbnb.pdf'
 SOURCE_PDF_NAME = "Airbnb 10-k Filings from Q1-2024"
-VECTORSTORE_LOCATION = ":memory:" #"localhost"  #'./data/vectorstore'
+VECTORSTORE_LOCATION = "https://6ba84e35-418c-4cad-ad66-40e818776169.us-east4-0.gcp.cloud.qdrant.io:6333"  #':memory:'
 VECTORSTORE_COLLECTION_NAME = 'airbnb_10k'
 
 
@@ -44,17 +46,18 @@ embedding_model = OpenAIEmbeddings(model="text-embedding-3-small")
 qdrant_vectorstore = None
 
 
-# Try to create the index
+# Let's check if the collection exists first.
+# There's an API for it: https://api.qdrant.tech/api-reference/collections/collection-exists
+# but it's not in the Python library (yet?),
+# so I'll make the REST request directly and save the result in a variable
+r = requests.get(f'{VECTORSTORE_LOCATION}/collections/{VECTORSTORE_COLLECTION_NAME}/exists', 
+                 headers={'api-key': qdrant_api_key}
+                 )
+collection_exists = r.json()['result']['exists']
+print(collection_exists)
 
-try:
-    # print(f'Trying to get existing vector store {VECTORSTORE_COLLECTION_NAME} from {VECTORSTORE_LOCATION}...')
-    # qdrant_vectorstore = Qdrant.from_existing_collection(
-    #     embedding_model,
-    #     path=None,
-    #     collection_name=VECTORSTORE_COLLECTION_NAME,
-    #     location=VECTORSTORE_LOCATION,
-    # )
 
+if not collection_exists:
     print(f"Indexing Files into vectorstore {VECTORSTORE_COLLECTION_NAME}")
 
     # Load docs    
@@ -77,13 +80,25 @@ try:
         embedding_model,
         location=VECTORSTORE_LOCATION,
         collection_name=VECTORSTORE_COLLECTION_NAME,
+        prefer_grpc=True,
+        api_key=qdrant_api_key,
     )
-except ValueError as e:
-    print('There was an issue with the index')
+
+else:
+    # Load existing collection
+    qdrant_vectorstore = Qdrant.from_existing_collection(
+        embedding_model,
+        path=None,
+        collection_name=VECTORSTORE_COLLECTION_NAME,
+        url=VECTORSTORE_LOCATION,
+        prefer_grpc=True,
+        api_key=qdrant_api_key,
+    )
 
 
 # Create the retriever
 qdrant_retriever = qdrant_vectorstore.as_retriever()
+
 
 
 # -- AUGMENTED -- #
@@ -101,12 +116,15 @@ QUERY:
 
 Use the provide context to answer the provided user query. 
 Only use the provided context to answer the query. 
-If the query is unrelated to the context given, you should answer 
-that you don't know because it is not in the given context.
-
+If the query is unrelated to the context given, you should apologize and answer 
+that you don't know because it is not related to the "Airbnb 10-k Filings from Q1, 2024" document.
 """
+
 # CREATE PROMPT TEMPLATE
 rag_prompt = ChatPromptTemplate.from_template(RAG_PROMPT)
+
+
+
 
 # -- GENERATION -- #
 """
@@ -122,7 +140,8 @@ def rename(original_author: str):
 .
     """
     rename_dict = {
-        "Assistant" : ASSISTANT_NAME
+        "Assistant" : ASSISTANT_NAME,
+        "Chatbot" : ASSISTANT_NAME,
     }
     return rename_dict.get(original_author, original_author)
 
