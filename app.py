@@ -1,18 +1,25 @@
 import os
 import requests
 import dotenv
-from operator import itemgetter
+import pathlib
+import operator
 
 import chainlit as cl
 
+import pymupdf4llm
+
 from qdrant_client import QdrantClient
 
-from langchain_openai import ChatOpenAI
-from langchain_community.document_loaders import TextLoader, PyMuPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import Qdrant 
-from langchain_openai.embeddings import OpenAIEmbeddings
 from langchain_core.prompts import PromptTemplate, ChatPromptTemplate
+
+from langchain_openai import ChatOpenAI
+from langchain_openai.embeddings import OpenAIEmbeddings
+
+from langchain_community.document_loaders import TextLoader #, PyMuPDFLoader
+from langchain_text_splitters import MarkdownTextSplitter, RecursiveCharacterTextSplitter
+
+from langchain_community.vectorstores import Qdrant 
+
 from langchain.schema.output_parser import StrOutputParser
 from langchain.schema.runnable import Runnable, RunnablePassthrough
 from langchain.schema.runnable.config import RunnableConfig
@@ -54,7 +61,7 @@ r = requests.get(f'{VECTORSTORE_LOCATION}/collections/{VECTORSTORE_COLLECTION_NA
                  headers={'api-key': qdrant_api_key}
                  )
 collection_exists = r.json()['result']['exists']
-print(collection_exists)
+#print(collection_exists)
 
 
 if not collection_exists:
@@ -62,12 +69,20 @@ if not collection_exists:
 
     # Load docs    
     # CREATE TEXT LOADER AND LOAD DOCUMENTS
-    documents = PyMuPDFLoader(SOURCE_PDF_PATH).load()
+    #documents = PyMuPDFLoader(SOURCE_PDF_PATH).load()
+
+    # convert the source PDF document to markdown, save it locally
+    md_text = pymupdf4llm.to_markdown(SOURCE_PDF_PATH)
+    md_path = SOURCE_PDF_PATH+'.md'
+    pathlib.Path(md_path).write_bytes(md_text.encode())
+
+    text_loader = TextLoader(md_path)
+    documents = text_loader.load()
 
     # CREATE TEXT SPLITTER AND SPLIT DOCUMENTS
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size = 200,
-        chunk_overlap = 0,
+    text_splitter = MarkdownTextSplitter(  #RecursiveCharacterTextSplitter(
+        chunk_size = 600,
+        chunk_overlap = 30,
         #length_function = tiktoken_len,
     )
 
@@ -151,8 +166,8 @@ async def start_chat():
 
     lcel_rag_chain = (
             {
-                "context": itemgetter("query") | qdrant_retriever, 
-                 "query": itemgetter("query")
+                "context": operator.itemgetter("query") | qdrant_retriever, 
+                 "query": operator.itemgetter("query")
             }
         | rag_prompt | openai_chat_model | StrOutputParser()
     )
